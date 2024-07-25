@@ -8,7 +8,10 @@ export default mergeConfig(
     test: {
       environment: 'jsdom',
       exclude: [...configDefaults.exclude, 'e2e/**'],
-      root: fileURLToPath(new URL('./', import.meta.url))
+      root: fileURLToPath(new URL('./', import.meta.url)),
+      onConsoleLog(log: string, type: 'stdout' | 'stderr'): boolean | void {
+        return !(log === 'message from third party library' && type === 'stdout')
+      }
     }
   })
 )
