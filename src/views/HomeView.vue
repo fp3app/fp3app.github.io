@@ -1,9 +1,12 @@
 <script setup lang="ts">
-import HelloWorld from '@/components/HelloWorld.vue'
+import TheResults from '@/components/TheResults.vue'
 </script>
 
 <template>
   <main>
-    <HelloWorld />
+    <section class="section">
+      <!-- <h1 class="title is-2">FP3</h1> -->
+      <TheResults />
+    </section>
   </main>
 </template>
