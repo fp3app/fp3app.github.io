@@ -8,26 +8,31 @@ const resultsStore = useResultsStore()
 const rawHTMLContent = ref('')
 const headerText = ref('')
 const localStorageKey = 'fetchedHTMLContent'
-const sortState = ref({ column: 'Cla', isAscending: true })
+const sortState = ref({ column: 'Chassis', isAscending: true })
 const minLapsFilter = ref(0)
-const isLapDiffFilterEnabled = ref(false)
-const lapDiffThreshold = ref(0)
-const lapDiffThresholdWeight = ref(5)
+const minLaps = ref(0)
+const maxLaps = ref(0)
+const lapDifference = ref(0)
+const minTimeDiffPercent = ref(0)
+const maxTimeDiffPercent = ref(100)
+const timeDifference = ref(100)
 
 onMounted(async () => {
-  getResults()
+  await getResults()
 })
 
-const getResults = async (reFetch?: false) => {
+const getResults = async (reFetch = false) => {
   resultsStore.fetching = true
 
   let htmlContent = ''
-  let headerHtmlContent = '' // Added to store the headerHtml content
+  let headerHtmlContent = ''
 
   // Try to retrieve from localStorage first
   const storedContent = localStorage.getItem(localStorageKey)
-  if (storedContent && !reFetch) {
+  const storedHeaderContent = localStorage.getItem(`${localStorageKey}-header`)
+  if (storedContent && storedHeaderContent && !reFetch) {
     htmlContent = storedContent
+    headerHtmlContent = storedHeaderContent
   } else {
     // If not found in localStorage, fetch from the URL
     try {
@@ -39,13 +44,13 @@ const getResults = async (reFetch?: false) => {
       }
       const data = await response.json()
       // Assuming the HTML content is now split into two parts: tableHtml and headerHtml
-      // and we need the tableHtml part which is at index [1]
-      htmlContent = data.tableHtml // Adjusted to access the tableHtml property
-      headerHtmlContent = data.headerHtml // Assuming this is the headerHtml from the response
+      htmlContent = data.tableHtml
+      headerHtmlContent = data.headerHtml
       console.log(`file: TheResults.vue:41 - getResults - headerHtmlContent:`, headerHtmlContent)
 
       // Store the fetched content in localStorage
       localStorage.setItem(localStorageKey, htmlContent)
+      localStorage.setItem(`${localStorageKey}-header`, headerHtmlContent)
     } catch (error) {
       console.error('Failed to fetch HTML content:', error)
       resultsStore.fetching = false
@@ -100,6 +105,7 @@ const getResults = async (reFetch?: false) => {
 
   nextTick().then(() => {
     tableToJson('#fp3-table')
+    getMinMaxLaps()
   })
 }
 
@@ -147,11 +153,19 @@ const getRowClasses = (result: DriverResult) => {
   }
 }
 
-const sortedAndFilteredResults = computed(() => {
-  // Calculate the maximum laps to determine the threshold
-  const maxLaps = Math.max(...resultsStore.results.data.map((result) => Number(result.Laps)))
-  lapDiffThreshold.value = maxLaps / lapDiffThresholdWeight.value
+// const function to get and set minLaps and maxLaps
+const getMinMaxLaps = () => {
+  const laps = resultsStore.results.data.map((result) => Number(result.Laps))
+  console.log(`file: TheResults.vue:156 - getMinMaxLaps - laps:`, laps)
+  minLaps.value = Math.min(...laps)
+  maxLaps.value = Math.max(...laps)
+  nextTick().then(() => {
+    minLapsFilter.value = minLaps.value
+    lapDifference.value = maxLaps.value
+  })
+}
 
+const sortedAndFilteredResults = computed(() => {
   // Group by chassis
   const groupedByChassis = resultsStore.results.data.reduce<Record<string, DriverResult[]>>(
     (acc, result) => {
@@ -165,21 +179,19 @@ const sortedAndFilteredResults = computed(() => {
   // Filter based on lap difference criteria if enabled
   const filteredByLapDifference = Object.values(groupedByChassis).reduce<DriverResult[]>(
     (acc, chassisResults) => {
-      if (isLapDiffFilterEnabled.value) {
-        // Determine if any lap difference within this chassis exceeds the threshold
-        const exceedsThreshold = chassisResults.some((result, index, arr) => {
-          if (index === 0) return false // No previous item to compare for the first item
-          return (
-            Math.abs(Number(result.Laps) - Number(arr[index - 1].Laps)) > lapDiffThreshold.value
-          )
-        })
+      // if (lapDifference.value > 0) {
+      // Determine if any lap difference within this chassis exceeds the threshold
+      const exceedsThreshold = chassisResults.some((result, index, arr) => {
+        if (index === 0) return false // No previous item to compare for the first item
+        return Math.abs(Number(result.Laps) - Number(arr[index - 1].Laps)) > lapDifference.value
+      })
 
-        // If no lap differences exceed the threshold, include this chassis's results
-        if (!exceedsThreshold) acc.push(...chassisResults)
-      } else {
-        // If filter is disabled, include all results
-        acc.push(...chassisResults)
-      }
+      // If no lap differences exceed the threshold, include this chassis's results
+      if (!exceedsThreshold) acc.push(...chassisResults)
+      // } else {
+      // If filter is disabled, include all results
+      // acc.push(...chassisResults)
+      // }
       return acc
     },
     []
@@ -208,7 +220,7 @@ function toggleSort(column: string) {
 }
 
 function colIsActive(column: string) {
-  return sortState.value.column === column ? 'is-selected' : ''
+  return sortState.value.column === column ? 'is-selected is-clickable' : 'is-clickable'
 }
 
 function getChevronClass(column: string) {
@@ -219,56 +231,94 @@ function getChevronClass(column: string) {
 </script>
 
 <template>
-  <section class="container mb-4">
+  <section class="container mb-6">
     <h2 class="title is-3">{{ headerText }} (FP3)</h2>
   </section>
-  <section class="container mb-4">
-    <h2 class="subtitle is-4">Filters</h2>
+  <section class="container mb-6">
     <nav class="panel">
-      <p class="panel-heading">Filter Options</p>
+      <p
+        class="panel-heading is-size-5 has-background-info has-text-white has-text-weight-semibold"
+      >
+        Filter Options
+      </p>
       <div class="panel-block">
-        <p class="control has-icons-left">
-          <input
-            class="input"
-            type="number"
-            placeholder="Minimum Laps"
-            v-model.number="minLapsFilter"
-          />
-          <span class="icon is-small is-left">
-            <i class="fas fa-tachometer-alt"></i>
-          </span>
-        </p>
-      </div>
-      <div class="panel-block">
-        <div class="field">
-          <label class="label" for="lapDiffThreshold">Lap Difference Threshold</label>
-          <div class="control">
-            <input
-              class="slider has-output is-fullwidth"
-              type="range"
-              min="1"
-              max="30"
-              step="1"
-              id="lapDiffThreshold"
-              v-model="lapDiffThresholdWeight"
-              tooltip="always"
-              tooltip-placement="bottom"
-            />
+        <div class="columns is-multiline">
+          <div class="column is-one-third">
+            <!-- Minimum Laps -->
+            <div class="field">
+              <label class="label" for="minLapsSlider">Minimum Laps</label>
+              <div class="control has-icons-left has-icons-right">
+                <input
+                  class="input has-output is-fullwidth"
+                  type="range"
+                  :min="minLaps"
+                  :max="maxLaps"
+                  step="1"
+                  id="minLapsSlider"
+                  v-model.number="minLapsFilter"
+                  tooltip="always"
+                  tooltip-placement="bottom"
+                />
+                <span class="icon is-small is-left">
+                  <i class="fas fa-tachometer-alt"></i>
+                </span>
+                <span class="icon is-small is-right">
+                  <output for="minLapsSlider">{{ minLapsFilter }}</output>
+                </span>
+              </div>
+            </div>
           </div>
-          <output for="lapDiffThreshold">{{ lapDiffThreshold }}</output>
+          <div class="column is-one-third">
+            <div class="field">
+              <!-- Lap Difference -->
+              <label class="label" for="lapDifference">Lap Difference</label>
+              <div class="control has-icons-left has-icons-right">
+                <input
+                  class="input has-output is-fullwidth"
+                  type="range"
+                  :min="0"
+                  :max="maxLaps"
+                  step="1"
+                  id="lapDifference"
+                  v-model="lapDifference"
+                  tooltip="always"
+                  tooltip-placement="bottom"
+                />
+                <span class="icon is-small is-left">
+                  <i class="fas fa-exchange-alt"></i>
+                </span>
+                <span class="icon is-small is-right">
+                  <output for="lapDifference">{{ lapDifference }}</output>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="column is-one-third">
+            <div class="field">
+              <!-- Time Difference -->
+              <label class="label" for="timeDifference">Time Difference</label>
+              <div class="control has-icons-left has-icons-right">
+                <input
+                  class="input has-output is-fullwidth"
+                  type="range"
+                  :min="minTimeDiffPercent"
+                  :max="maxTimeDiffPercent"
+                  step="1"
+                  id="timeDifference"
+                  v-model="timeDifference"
+                  tooltip="always"
+                  tooltip-placement="bottom"
+                />
+                <span class="icon is-small is-left">
+                  <i class="fas fa-clock"></i>
+                </span>
+                <span class="icon is-small is-right">
+                  <output for="timeDifference">{{ timeDifference }}%</output>
+                </span>
+              </div>
+            </div>
+          </div>
         </div>
-        <label class="checkbox">
-          <input type="checkbox" v-model="isLapDiffFilterEnabled" />
-          Enable Max Lap Difference (Threshold: {{ lapDiffThreshold }})
-        </label>
-      </div>
-      <div class="panel-block">
-        <p class="control has-icons-left">
-          <input class="input" type="text" placeholder="Time Difference" />
-          <span class="icon is-small is-left">
-            <i class="fas fa-clock"></i>
-          </span>
-        </p>
       </div>
     </nav>
   </section>
@@ -276,7 +326,6 @@ function getChevronClass(column: string) {
     <div class="is-hidden" id="fp3-table" v-html="rawHTMLContent"></div>
     <div v-if="resultsStore.fetching" class="notification is-info">Loading results...</div>
     <template v-else>
-      <h2 class="subtitle is-4">Results</h2>
       <table class="table is-bordered">
         <thead>
           <tr>

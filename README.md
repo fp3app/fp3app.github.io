@@ -47,4 +47,3 @@ bun lint
 # todo
 
 - [ ] Add logic to compare time difference between matching chassis's, do something with another threshold slider to filter out results where the gap is too narrow for it to be a worthwhile risk
-- Lap diff stuff - check usefulness and do some refactoring
