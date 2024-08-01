@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watchEffect } from 'vue'
 import { nextTick } from 'vue'
 import { useResultsStore } from '@/stores/results'
 
@@ -15,7 +15,9 @@ const maxLaps = ref(0)
 const lapDifference = ref(0)
 const minTimeDiffPercent = ref(0)
 const maxTimeDiffPercent = ref(100)
-const timeDifference = ref(100)
+const minTimeDifference = ref(0)
+const maxTimeDifference = ref(100)
+const setSuggestedValsChecked = ref(false)
 
 onMounted(async () => {
   await getResults()
@@ -46,7 +48,6 @@ const getResults = async (reFetch = false) => {
       // Assuming the HTML content is now split into two parts: tableHtml and headerHtml
       htmlContent = data.tableHtml
       headerHtmlContent = data.headerHtml
-      console.log(`file: TheResults.vue:41 - getResults - headerHtmlContent:`, headerHtmlContent)
 
       // Store the fetched content in localStorage
       localStorage.setItem(localStorageKey, htmlContent)
@@ -156,13 +157,28 @@ const getRowClasses = (result: DriverResult) => {
 // const function to get and set minLaps and maxLaps
 const getMinMaxLaps = () => {
   const laps = resultsStore.results.data.map((result) => Number(result.Laps))
-  console.log(`file: TheResults.vue:156 - getMinMaxLaps - laps:`, laps)
   minLaps.value = Math.min(...laps)
   maxLaps.value = Math.max(...laps)
   nextTick().then(() => {
     minLapsFilter.value = minLaps.value
     lapDifference.value = maxLaps.value
   })
+}
+
+// Helper function to convert time string to milliseconds
+function convertTimeToMilliseconds(time: string | null): number {
+  if (!time) return 0
+
+  const match = time.match(/(\d+)'(\d+)\.(\d+)/)
+  if (!match) return 0
+
+  const [_, minutesPart, secondsPart, millisecondsPart] = match.map(Number)
+
+  const minutesInMs = minutesPart * 60 * 1000
+  const secondsInMs = secondsPart * 1000
+  const totalMilliseconds = minutesInMs + secondsInMs + millisecondsPart
+
+  return totalMilliseconds
 }
 
 const sortedAndFilteredResults = computed(() => {
@@ -176,29 +192,42 @@ const sortedAndFilteredResults = computed(() => {
     {}
   )
 
-  // Filter based on lap difference criteria if enabled
-  const filteredByLapDifference = Object.values(groupedByChassis).reduce<DriverResult[]>(
+  // Filter based on lap difference and time difference criteria if enabled
+  const filteredResults = Object.values(groupedByChassis).reduce<DriverResult[]>(
     (acc, chassisResults) => {
-      // if (lapDifference.value > 0) {
+      // Convert time for each result
+      const chassisResultsWithTime = chassisResults.map((result) => ({
+        ...result,
+        timeInMs: convertTimeToMilliseconds(result.Time)
+      }))
+
       // Determine if any lap difference within this chassis exceeds the threshold
-      const exceedsThreshold = chassisResults.some((result, index, arr) => {
+      const exceedsLapThreshold = chassisResults.some((result, index, arr) => {
         if (index === 0) return false // No previous item to compare for the first item
         return Math.abs(Number(result.Laps) - Number(arr[index - 1].Laps)) > lapDifference.value
       })
 
-      // If no lap differences exceed the threshold, include this chassis's results
-      if (!exceedsThreshold) acc.push(...chassisResults)
-      // } else {
-      // If filter is disabled, include all results
-      // acc.push(...chassisResults)
-      // }
+      // Determine if any time difference within this chassis exceeds the threshold
+      const exceedsTimeThreshold = chassisResultsWithTime.some((result, index, arr) => {
+        if (index === 0) return false // No previous item to compare for the first item
+        if (result.timeInMs == null || arr[index - 1].timeInMs == null) return false // Check for null values
+        const timeDifference = Math.abs(result.timeInMs - arr[index - 1].timeInMs)
+        const percentageDifference = (timeDifference / arr[index - 1].timeInMs) * 100
+        return (
+          percentageDifference > maxTimeDifference.value ||
+          percentageDifference < minTimeDifference.value
+        )
+      })
+
+      // If no lap or time differences exceed the threshold, include this chassis's results
+      if (!exceedsLapThreshold && !exceedsTimeThreshold) acc.push(...chassisResults)
       return acc
     },
     []
   )
 
   // Apply existing sorting and minimum laps filtering
-  return filteredByLapDifference
+  return filteredResults
     .filter((result) => Number(result.Laps) >= minLapsFilter.value)
     .sort((a, b) => {
       const valueA = a[sortState.value.column as keyof DriverResult]
@@ -228,6 +257,33 @@ function getChevronClass(column: string) {
     ? 'fa-chevron-up'
     : 'fa-chevron-down'
 }
+
+function setSuggestedValues(isChecked) {
+  console.log(`file: TheResults.vue:261 - setSuggestedValues - isChecked:`, isChecked)
+  if (isChecked) {
+    // calculate half way between minLaps and maxLaps
+    minLapsFilter.value = Math.round((maxLaps.value - minLaps.value) / 2) + minLaps.value
+    // set lapDifference.value to 0.8 of maxLaps rounded up to the nearest whole number
+    lapDifference.value = Math.ceil(maxLaps.value * 0.8)
+    console.log(
+      `file: TheResults.vue:265 - setSuggestedValues - lapDifference.value:`,
+      lapDifference.value
+    )
+
+    minTimeDifference.value = 1.5
+    maxTimeDifference.value = 10
+  } else {
+    // Reset to default values
+    getMinMaxLaps()
+    minTimeDifference.value = 0
+    maxTimeDifference.value = 100
+  }
+}
+
+// watchEffect for setSuggestedValsChecked that triggers the function setSuggestedValues
+watchEffect(() => {
+  setSuggestedValues(setSuggestedValsChecked.value)
+})
 </script>
 
 <template>
@@ -235,207 +291,240 @@ function getChevronClass(column: string) {
     <h2 class="title is-3">{{ headerText }} (FP3)</h2>
   </section>
   <section class="container mb-6">
-    <nav class="panel">
-      <p
-        class="panel-heading is-size-5 has-background-info has-text-white has-text-weight-semibold"
-      >
-        Filter Options
-      </p>
-      <div class="panel-block">
-        <div class="columns is-multiline">
-          <div class="column is-one-third">
-            <!-- Minimum Laps -->
-            <div class="field">
-              <label class="label" for="minLapsSlider">Minimum Laps</label>
-              <div class="control has-icons-left has-icons-right">
-                <input
-                  class="input has-output is-fullwidth"
-                  type="range"
-                  :min="minLaps"
-                  :max="maxLaps"
-                  step="1"
-                  id="minLapsSlider"
-                  v-model.number="minLapsFilter"
-                  tooltip="always"
-                  tooltip-placement="bottom"
-                />
-                <span class="icon is-small is-left">
-                  <i class="fas fa-tachometer-alt"></i>
-                </span>
-                <span class="icon is-small is-right">
-                  <output for="minLapsSlider">{{ minLapsFilter }}</output>
-                </span>
-              </div>
+    <div class="box">
+      <h3 class="title is-4">Filter Options</h3>
+      <div class="columns is-multiline">
+        <div class="column is-full-mobile is-half-tablet">
+          <!-- Minimum Laps -->
+          <div class="field">
+            <label class="label" for="minLapsSlider">Minimum Laps</label>
+            <div class="control has-icons-left has-icons-right">
+              <input
+                class="input has-output is-fullwidth"
+                type="range"
+                :min="minLaps"
+                :max="maxLaps"
+                step="1"
+                id="minLapsSlider"
+                v-model.number="minLapsFilter"
+                tooltip="always"
+                tooltip-placement="bottom"
+              />
+              <span class="icon is-small is-left">
+                <i class="fas fa-tachometer-alt"></i>
+              </span>
+              <span class="icon is-small is-right">
+                <output for="minLapsSlider">{{ minLapsFilter }}</output>
+              </span>
             </div>
           </div>
-          <div class="column is-one-third">
-            <div class="field">
-              <!-- Lap Difference -->
-              <label class="label" for="lapDifference">Lap Difference</label>
-              <div class="control has-icons-left has-icons-right">
-                <input
-                  class="input has-output is-fullwidth"
-                  type="range"
-                  :min="0"
-                  :max="maxLaps"
-                  step="1"
-                  id="lapDifference"
-                  v-model="lapDifference"
-                  tooltip="always"
-                  tooltip-placement="bottom"
-                />
-                <span class="icon is-small is-left">
-                  <i class="fas fa-exchange-alt"></i>
-                </span>
-                <span class="icon is-small is-right">
-                  <output for="lapDifference">{{ lapDifference }}</output>
-                </span>
-              </div>
+        </div>
+        <div class="column is-full-mobile is-half-tablet">
+          <div class="field">
+            <!-- Lap Difference -->
+            <label class="label" for="lapDifference">Lap Difference</label>
+            <div class="control has-icons-left has-icons-right">
+              <input
+                class="input has-output is-fullwidth"
+                type="range"
+                :min="0"
+                :max="maxLaps"
+                step="1"
+                id="lapDifference"
+                v-model.number="lapDifference"
+                tooltip="always"
+                tooltip-placement="bottom"
+              />
+              <span class="icon is-small is-left">
+                <i class="fas fa-exchange-alt"></i>
+              </span>
+              <span class="icon is-small is-right">
+                <output for="lapDifference">{{ lapDifference }}</output>
+              </span>
             </div>
           </div>
-          <div class="column is-one-third">
-            <div class="field">
-              <!-- Time Difference -->
-              <label class="label" for="timeDifference">Time Difference</label>
-              <div class="control has-icons-left has-icons-right">
-                <input
-                  class="input has-output is-fullwidth"
-                  type="range"
-                  :min="minTimeDiffPercent"
-                  :max="maxTimeDiffPercent"
-                  step="1"
-                  id="timeDifference"
-                  v-model="timeDifference"
-                  tooltip="always"
-                  tooltip-placement="bottom"
-                />
-                <span class="icon is-small is-left">
-                  <i class="fas fa-clock"></i>
-                </span>
-                <span class="icon is-small is-right">
-                  <output for="timeDifference">{{ timeDifference }}%</output>
-                </span>
-              </div>
+        </div>
+        <div class="column is-full-mobile is-half-tablet">
+          <div class="field">
+            <!-- Min Time Difference -->
+            <label class="label" for="timeDifference">Minimum Time Difference</label>
+            <div class="control has-icons-left has-icons-right">
+              <input
+                class="input has-output is-fullwidth"
+                type="range"
+                :min="minTimeDiffPercent"
+                :max="maxTimeDiffPercent"
+                step="0.1"
+                id="maxTimeDifference"
+                v-model.number="minTimeDifference"
+                tooltip="always"
+                tooltip-placement="bottom"
+              />
+              <span class="icon is-small is-left">
+                <i class="fas fa-clock"></i>
+              </span>
+              <span class="icon is-small is-right">
+                <output for="timeDifference">{{ minTimeDifference }}%</output>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="column is-full-mobile is-half-tablet">
+          <div class="field">
+            <!-- Max Time Difference -->
+            <label class="label" for="timeDifference">Maximum Time Difference</label>
+            <div class="control has-icons-left has-icons-right">
+              <input
+                class="input has-output is-fullwidth"
+                type="range"
+                :min="minTimeDiffPercent"
+                :max="maxTimeDiffPercent"
+                step="0.1"
+                id="maxTimeDifference"
+                v-model.number="maxTimeDifference"
+                tooltip="always"
+                tooltip-placement="bottom"
+              />
+              <span class="icon is-small is-left">
+                <i class="fas fa-clock"></i>
+              </span>
+              <span class="icon is-small is-right">
+                <output for="timeDifference">{{ maxTimeDifference }}%</output>
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="column is-full-mobile is-half-tablet">
+          <div class="field">
+            <!-- Suggested Values -->
+            <label class="label" for="suggestedValues">Suggested Values</label>
+            <div class="control">
+              <label class="checkbox">
+                <input type="checkbox" v-model="setSuggestedValsChecked" />
+                Set suggested
+              </label>
             </div>
           </div>
         </div>
       </div>
-    </nav>
+    </div>
   </section>
   <section class="container mb-5">
     <div class="is-hidden" id="fp3-table" v-html="rawHTMLContent"></div>
     <div v-if="resultsStore.fetching" class="notification is-info">Loading results...</div>
     <template v-else>
-      <table class="table is-bordered">
-        <thead>
-          <tr>
-            <th :class="colIsActive('Cla')" @click="toggleSort('Cla')">
-              <span>Cla</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Cla')]"
-                    :style="!colIsActive('Cla') ? 'visibility: hidden;' : ''"
-                  ></i>
+      <div class="table-container">
+        <table class="table is-bordered is-striped is-hoverable is-fullwidth">
+          <thead>
+            <tr>
+              <th :class="colIsActive('Cla')" @click="toggleSort('Cla')">
+                <span>Cla</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Cla')]"
+                      :style="!colIsActive('Cla') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('Driver')" @click="toggleSort('Driver')">
-              <span>Driver</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Driver')]"
-                    :style="!colIsActive('Driver') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('Driver')" @click="toggleSort('Driver')">
+                <span>Driver</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Driver')]"
+                      :style="!colIsActive('Driver') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('Chassis')" @click="toggleSort('Chassis')">
-              <span>Chassis</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Chassis')]"
-                    :style="!colIsActive('Chassis') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('Chassis')" @click="toggleSort('Chassis')">
+                <span>Chassis</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Chassis')]"
+                      :style="!colIsActive('Chassis') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('Engine')" @click="toggleSort('Engine')">
-              <span>Engine</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Engine')]"
-                    :style="!colIsActive('Engine') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('Engine')" @click="toggleSort('Engine')">
+                <span>Engine</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Engine')]"
+                      :style="!colIsActive('Engine') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('Laps')" @click="toggleSort('Laps')">
-              <span>Laps</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Laps')]"
-                    :style="!colIsActive('Laps') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('Laps')" @click="toggleSort('Laps')">
+                <span>Laps</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Laps')]"
+                      :style="!colIsActive('Laps') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('Time')" @click="toggleSort('Time')">
-              <span>Time</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Time')]"
-                    :style="!colIsActive('Time') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('Time')" @click="toggleSort('Time')">
+                <span>Time</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Time')]"
+                      :style="!colIsActive('Time') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('Interval')" @click="toggleSort('Interval')">
-              <span>Interval</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('Interval')]"
-                    :style="!colIsActive('Interval') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('Interval')" @click="toggleSort('Interval')">
+                <span>Interval</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('Interval')]"
+                      :style="!colIsActive('Interval') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-            <th :class="colIsActive('km/h')" @click="toggleSort('km/h')">
-              <span>km/h</span>
-              <span class="icon-text">
-                <span class="icon">
-                  <i
-                    :class="['fas', 'fa-fw', getChevronClass('km/h')]"
-                    :style="!colIsActive('km/h') ? 'visibility: hidden;' : ''"
-                  ></i>
+              </th>
+              <th :class="colIsActive('km/h')" @click="toggleSort('km/h')">
+                <span>km/h</span>
+                <span class="icon-text">
+                  <span class="icon">
+                    <i
+                      :class="['fas', 'fa-fw', getChevronClass('km/h')]"
+                      :style="!colIsActive('km/h') ? 'visibility: hidden;' : ''"
+                    ></i>
+                  </span>
                 </span>
-              </span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            :class="getRowClasses(result)"
-            v-for="result in sortedAndFilteredResults"
-            :key="result.Driver"
-          >
-            <td>{{ result.Cla }}</td>
-            <td>{{ result.Driver }}</td>
-            <td>{{ result.Chassis }}</td>
-            <td>{{ result.Engine }}</td>
-            <td>{{ result.Laps }}</td>
-            <td>{{ result.Time }}</td>
-            <td>{{ result.Interval }}</td>
-            <td>{{ result['km/h'] }}</td>
-          </tr>
-        </tbody>
-      </table>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              :class="getRowClasses(result)"
+              v-for="result in sortedAndFilteredResults"
+              :key="result.Driver"
+            >
+              <td>{{ result.Cla }}</td>
+              <td>{{ result.Driver }}</td>
+              <td>{{ result.Chassis }}</td>
+              <td>{{ result.Engine }}</td>
+              <td>{{ result.Laps }}</td>
+              <td>{{ result.Time }}</td>
+              <td>{{ result.Interval }}</td>
+              <td>{{ result['km/h'] }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </template>
   </section>
   <section class="container">
